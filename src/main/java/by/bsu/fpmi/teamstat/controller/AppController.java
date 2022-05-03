@@ -21,6 +21,7 @@ import java.util.List;
 @AllArgsConstructor
 @RequestMapping("/teamStat")
 public class AppController {
+
     private static final DateTimeFormatter formatter = DateTimeFormatter.ISO_DATE_TIME;
 
     private final BugService bugService;
@@ -53,6 +54,11 @@ public class AppController {
         LocalDateTime endDate = LocalDateTime.parse(end, formatter);
         List<String> teamPresencePercent = meetingService.getTeamPresencePercent(teamId, startDate, endDate);
         return new ResponseEntity<>(new Message(teamPresencePercent), HttpStatus.OK);
+    }
+
+    @GetMapping("/jira/login")
+    public void jiraLogin( String username, String password){
+
     }
 
     @GetMapping("/teams")

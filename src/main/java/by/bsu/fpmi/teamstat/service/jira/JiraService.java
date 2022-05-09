@@ -1,78 +1,114 @@
 package by.bsu.fpmi.teamstat.service.jira;
 
+import by.bsu.fpmi.teamstat.entity.Issue;
+import by.bsu.fpmi.teamstat.entity.Issues;
 import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import jdk.nashorn.internal.ir.ObjectNode;
+import lombok.RequiredArgsConstructor;
+import org.apache.tomcat.util.codec.binary.Base64;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpMethod;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
+import org.springframework.web.client.RestTemplate;
 
-import java.io.BufferedReader;
-import java.io.InputStreamReader;
-import java.io.OutputStream;
-import java.net.HttpURLConnection;
-import java.net.URL;
-import java.nio.charset.StandardCharsets;
+import java.net.URI;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
 
 @Service
+@RequiredArgsConstructor
 public class JiraService {
 
+    private final RestTemplate restTemplate;
 
-    private static final String JIRA_BASE_URL = "";
-    private static final String JIRA_LOGIN_URL = "auth/1/session";
-    private static final String JIRA_LOGIN_URL = "auth/1/session";
-    private static final String JIRA_LOGIN_URL = "auth/1/session";
-    private static final String DEFAULT_USER = "admin";
+    private final ObjectMapper issueMapper;
+    private String username;
 
-    public String loginToJira(String username, String password) {
+    private String password;
+    private static final String JIRA_BASE_URL = "http://localhost:8080/rest/";
+    private static final String JIRA_LOGIN_URL = "auth/1/session";
+
+    private static final String PROJECT_ISSUES_TYPES = "http://localhost:8080/rest/api/2/issue/createmeta/10000/issuetypes/";
+
+    private static final String CREATE_ISSUES_URL = "http://localhost:8080/rest/api/2/issue/";
+
+    private static final String ISSUES_URL = "http://localhost:8080/rest/api/2/search/";
+
+    private static final String ISSUE_URL = "http://localhost:8080/rest/api/2/issue/";
+
+    public ResponseEntity<String> loginToJira(String username, String password) {
         try {
-            URL url = new URL(JIRA_BASE_URL + JIRA_LOGIN_URL);
-            HttpURLConnection connection = (HttpURLConnection) url.openConnection();
-            connection.setDoOutput(true);
-            connection.setRequestMethod("POST");
-            connection.setRequestProperty("Content-Type", "application/json");
-
+            this.password = password;
+            this.username = username;
             String input = "{\"username\":\"" + username + "\", \"password\": \"" + password + "\"}";
-            OutputStream outputStream = connection.getOutputStream();
-            outputStream.write(input.getBytes(StandardCharsets.UTF_8));
-            outputStream.flush();
-
-            if (connection.getResponseCode() == 200) {
-                BufferedReader bufferedReader = new BufferedReader(new InputStreamReader(connection.getInputStream()));
-                String output = "";
-                StringBuilder response = new StringBuilder();
-                while ((output = bufferedReader.readLine()) != null) {
-                    response.append(output);
-                }
-                return response.toString();
-            }
-            connection.disconnect();
-
+            HttpEntity<String> request = createRequest(input, new HttpHeaders());
+            return restTemplate.postForEntity(new URI(JIRA_BASE_URL + JIRA_LOGIN_URL), request, String.class);
         } catch (Exception e) {
             throw new JiraLoginException(e.getMessage(), e);
         }
-        return "";
     }
 
-    public String parseJSessionId(String loginJson) {
+    public ResponseEntity<String> getIssuesTypes() {
+        HttpHeaders headers = getAuthHeaders();
+        HttpEntity<String> request = new HttpEntity<>(headers);
+        return restTemplate.exchange(URI.create(PROJECT_ISSUES_TYPES), HttpMethod.GET, request, String.class);
+    }
+
+    public ResponseEntity<String> createIssue(String issueJson) {
+        HttpEntity<String> request = createRequest(issueJson, getAuthHeaders());
+        return restTemplate.postForEntity(CREATE_ISSUES_URL, request, String.class);
+    }
+
+    public ResponseEntity<String> getIssue(String id) {
+        HttpHeaders headers = getAuthHeaders();
+        HttpEntity<String> request = new HttpEntity<>(headers);
+        return restTemplate.exchange(URI.create(ISSUE_URL + id), HttpMethod.GET, request, String.class);
+    }
+
+    public List<Issue> getIssues() {
+        HttpHeaders headers = getAuthHeaders();
+        HttpEntity<String> request = new HttpEntity<>(headers);
+        ResponseEntity<String> result = restTemplate.exchange(URI.create(ISSUES_URL), HttpMethod.GET, request, String.class);
+        String body = result.getBody();
+        Issues issues = null;
         try {
-            JsonNode parent= new ObjectMapper().readTree(loginJson);
-            //session
-            return parent.path("value").asText();
-        } catch (JsonProcessingException e) {
-            throw new JiraException("Cannot obtain jssessionId: " + e.getMessage(), e);
+            issues = issueMapper.readValue(body, Issues.class);
+            List<Issue> issuesList = new ArrayList<>();
+            for (Object issueRaw : issues.getIssues()) {
+                Map<String, ?> issueAsMap = (Map<String, ?>) issueRaw;
+                Map<String, Object> fields = (Map<String, Object>) ((Map<?, ?>) issueRaw).get("fields");
+                String summary = (String) fields.get("summary");
+                String description = (String) fields.get("description");
+                String resolution = fields.get("resolution") == null ? "unresolved" : (String) fields.get("resolution");
+                String priority = (String) ((Map<String, ?>) fields.get("priority")).get("name");
+                String type = (String) ((Map<String, ?>) fields.get("issuetype")).get("name");
+                Issue issue = new Issue(summary, description, type, priority, resolution);
+                issuesList.add(issue);
+            }
+            return issuesList;
+        } catch (Exception e) {
+            throw new JiraException(e.getMessage(), e);
         }
     }
 
-    public String getJsonData(String jsessionId) {
-
+    private HttpHeaders getAuthHeaders() {
+        String plainCreds = username + ":" + password;
+        byte[] plainCredsBytes = plainCreds.getBytes();
+        byte[] base64CredsBytes = Base64.encodeBase64(plainCredsBytes);
+        String base64Creds = new String(base64CredsBytes);
+        HttpHeaders headers = new HttpHeaders();
+        headers.add("Authorization", "Basic " + base64Creds);
+        return headers;
     }
 
-    public String formatDataToCsv(String jsonData) {
-
+    private HttpEntity<String> createRequest(String input, HttpHeaders headers) {
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        HttpEntity<String> request = new HttpEntity<>(input, headers);
+        return request;
     }
-
-    public boolean getInfoFile(String csvData) {
-
-    }
-
 }
